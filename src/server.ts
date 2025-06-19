@@ -1,4 +1,4 @@
-#!/usr/bin/env node
+//!/usr/bin/env node
 
 import express from 'express';
 import cors from 'cors';
@@ -25,21 +25,28 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// MongoDB connection
 await mongoose.connect(process.env.MONGO_URI!, {
   dbName: 'prescriptions',
 });
 console.log('[MongoDB] Connected');
 
-// Patient schema and model
-const patientSchema = new Schema({
-  id: String,
-  name: String,
-  age: Number,
-  diagnosis: String,
-  history: [String],
+interface Patient {
+  id: string;
+  name: string;
+  age: number;
+  diagnosis: string;
+  history: string[];
+}
+
+const patientSchema = new Schema<Patient>({
+  id: { type: String, required: true },
+  name: { type: String, required: true },
+  age: { type: Number, required: true },
+  diagnosis: { type: String, required: true },
+  history: { type: [String], required: true },
 });
-const PatientModel = model('Patient', patientSchema);
+
+const PatientModel = model<Patient>('Patient', patientSchema);
 
 interface PrescriptionRequest {
   patient_id: string;
@@ -71,17 +78,30 @@ const generatePrescription = async (
 ): Promise<{
   generated: string;
   prescription: string;
-  patient: any;
+  patient: Patient;
 }> => {
-  const patient = await PatientModel.findOne({ id: req.patient_id });
-  if (!patient) throw new Error('Invalid patient ID');
+  const patientDoc = await PatientModel.findOne({ id: req.patient_id }).lean();
+  if (!patientDoc) throw new Error('Invalid patient ID');
 
-  let history = '';
-  try {
-    history = await fs.readFile('past_prescriptions.txt', 'utf-8');
-  } catch {}
+  if (
+    typeof patientDoc.age !== 'number' ||
+    typeof patientDoc.diagnosis !== 'string' ||
+    !Array.isArray(patientDoc.history)
+  ) {
+    throw new Error('Incomplete or invalid patient data');
+  }
 
-  const prompt = generatePrompt(patient, req.symptoms, history);
+  const historyText = await fs.readFile('past_prescriptions.txt', 'utf-8').catch(() => '');
+
+  const prompt = generatePrompt(
+    {
+      age: patientDoc.age,
+      diagnosis: patientDoc.diagnosis,
+      history: patientDoc.history,
+    },
+    req.symptoms,
+    historyText
+  );
 
   const response = await ai.models.generateContent({
     model: 'gemini-1.5-flash',
@@ -97,10 +117,19 @@ const generatePrescription = async (
     'utf-8'
   );
 
-  return { generated, prescription: finalOutput, patient };
+  return {
+    generated,
+    prescription: finalOutput,
+    patient: {
+      id: patientDoc.id,
+      name: patientDoc.name,
+      age: patientDoc.age,
+      diagnosis: patientDoc.diagnosis,
+      history: patientDoc.history,
+    },
+  };
 };
 
-// MCP server for tool access
 const mcp = new MCPServer(
   { name: 'prescription-mcp', version: '0.1.0' },
   { capabilities: { tools: {} } }

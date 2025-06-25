@@ -23,8 +23,9 @@ if (!GEMINI_API_KEY) throw new Error("Missing GEMINI_API_KEY");
 const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 const transport = new StdioClientTransport({
-  command: "npx",
-  args: ["tsx", "src/mcp-server.ts"],
+  command: "node",
+  args: ["dist/mcp-server.js"],
+  env: process.env, 
 });
 
 const mcp = new Client(

@@ -35,6 +35,7 @@ const mcp = new Client(
 await mcp.connect(transport);
 
 app.use(express.static("public"));
+app.use("/ui", express.static("public"));
 
 // GET all patients
 app.get("/api/patients", async (req, res) => {
@@ -127,5 +128,5 @@ Start the prescription directly. Do not include disclaimers or introductions.
 
 const PORT = parseInt(process.env.PORT ?? "3000", 10);
 app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 Doctor Dashboard running on port ${PORT}`);
+  console.log(`Doctor Dashboard running on port ${PORT}`);
 });

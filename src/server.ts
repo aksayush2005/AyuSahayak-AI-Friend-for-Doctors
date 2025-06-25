@@ -25,7 +25,7 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 const transport = new StdioClientTransport({
   command: "node",
   args: ["dist/mcp-server.js"],
-  env: process.env, 
+  env: process.env as Record<string, string>,
 });
 
 const mcp = new Client(

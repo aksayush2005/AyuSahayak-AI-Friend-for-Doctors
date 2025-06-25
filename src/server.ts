@@ -24,7 +24,7 @@ const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
 const transport = new StdioClientTransport({
   command: "npx",
-  args: ["tsx", "src/server.ts"],
+  args: ["tsx", "src/mcp-server.ts"],
 });
 
 const mcp = new Client(

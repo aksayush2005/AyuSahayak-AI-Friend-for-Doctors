@@ -1,35 +1,23 @@
-//!/usr/bin/env node
-
-import express from 'express';
-import cors from 'cors';
-import path from 'path';
-import fs from 'fs/promises';
-import { fileURLToPath } from 'url';
-import dotenv from 'dotenv';
-import mongoose, { Schema, model } from 'mongoose';
-import { Server as MCPServer } from '@modelcontextprotocol/sdk/server/index.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from '@modelcontextprotocol/sdk/types.js';
-import { GoogleGenAI } from '@google/genai';
-
+#!/usr/bin/env tsx
+import dotenv from "dotenv";
 dotenv.config();
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
-if (!GEMINI_API_KEY) throw new Error('Missing GEMINI_API_KEY in .env');
+import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { z } from "zod";
+import mongoose, { Schema, model } from "mongoose";
+import fs from "fs/promises";
+import { InferenceClient } from "@huggingface/inference";
 
-const ai = new GoogleGenAI({ apiKey: GEMINI_API_KEY });
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const { MONGO_URI, HF_API_TOKEN } = process.env;
+if (!MONGO_URI || !HF_API_TOKEN) {
+  console.error("⚠️ Missing MONGO_URI or HF_API_TOKEN in .env");
+  process.exit(1);
+}
 
-await mongoose.connect(process.env.MONGO_URI!, {
-  dbName: 'prescriptions',
-});
-console.log('[MongoDB] Connected');
-
+// MongoDB
+await mongoose.connect(MONGO_URI, { dbName: "prescriptions" });
 interface Patient {
   id: string;
   name: string;
@@ -37,222 +25,189 @@ interface Patient {
   diagnosis: string;
   history: string[];
 }
-
-const patientSchema = new Schema<Patient>({
-  id: { type: String, required: true },
-  name: { type: String, required: true },
-  age: { type: Number, required: true },
-  diagnosis: { type: String, required: true },
-  history: { type: [String], required: true },
-});
-
-const PatientModel = model<Patient>('Patient', patientSchema);
-
-interface PrescriptionRequest {
-  patient_id: string;
-  symptoms: string;
-  final_prescription?: string;
-}
-
-const generatePrompt = (
-  patient: { age: number; diagnosis: string; history: string[] },
-  symptoms: string,
-  history: string
-): string => `
-You are a licensed doctor. Based on the following patient details and symptoms, write a professional, short, and safe prescription using only generic medicine names.
-
-Patient Details:
-- Age: ${patient.age}
-- Diagnosis: ${patient.diagnosis}
-- History: ${patient.history.join(', ')}
-
-Current Symptoms: ${symptoms}
-
-${history ? `Past data:\n${history}` : ''}
-
-Start the prescription directly. Do not include disclaimers or introductions.
-`;
-
-const generatePrescription = async (
-  req: PrescriptionRequest
-): Promise<{
-  generated: string;
-  prescription: string;
-  patient: Patient;
-}> => {
-  const patientDoc = await PatientModel.findOne({ id: req.patient_id }).lean();
-  if (!patientDoc) throw new Error('Invalid patient ID');
-
-  if (
-    typeof patientDoc.age !== 'number' ||
-    typeof patientDoc.diagnosis !== 'string' ||
-    !Array.isArray(patientDoc.history)
-  ) {
-    throw new Error('Incomplete or invalid patient data');
-  }
-
-  const historyText = await fs.readFile('past_prescriptions.txt', 'utf-8').catch(() => '');
-
-  const prompt = generatePrompt(
-    {
-      age: patientDoc.age,
-      diagnosis: patientDoc.diagnosis,
-      history: patientDoc.history,
-    },
-    req.symptoms,
-    historyText
-  );
-
-  const response = await ai.models.generateContent({
-    model: 'gemini-1.5-flash',
-    contents: prompt,
-  });
-
-  const generated = response.text?.trim() || '';
-  const finalOutput = req.final_prescription || generated;
-
-  await fs.appendFile(
-    'past_prescriptions.txt',
-    `\nPatient: ${req.patient_id} | Symptoms: ${req.symptoms} | Prescription: ${finalOutput}\n`,
-    'utf-8'
-  );
-
-  return {
-    generated,
-    prescription: finalOutput,
-    patient: {
-      id: patientDoc.id,
-      name: patientDoc.name,
-      age: patientDoc.age,
-      diagnosis: patientDoc.diagnosis,
-      history: patientDoc.history,
-    },
-  };
-};
-
-const mcp = new MCPServer(
-  { name: 'prescription-mcp', version: '0.1.0' },
-  { capabilities: { tools: {} } }
+const PatientModel = model<Patient>(
+  "Patient",
+  new Schema<Patient>({
+    id: { type: String, required: true },
+    name: { type: String, required: true },
+    age: { type: Number, required: true },
+    diagnosis: { type: String, required: true },
+    history: { type: [String], required: true },
+  })
 );
 
-mcp.setRequestHandler(ListToolsRequestSchema, async () => ({
-  tools: [
-    {
-      name: 'get_all_patients',
-      description: 'Get all patients',
-      inputSchema: { type: 'object', properties: {} },
-    },
-    {
-      name: 'get_patient_by_id',
-      description: 'Fetch one patient',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          patient_id: { type: 'string', description: 'Patient ID' },
-        },
-        required: ['patient_id'],
+// ——— Hugging Face for Embedding ———
+const hf = new InferenceClient(HF_API_TOKEN);
+
+async function embed(text: string): Promise<number[]> {
+  const res = await hf.featureExtraction({
+    model: "sentence-transformers/all-MiniLM-L6-v2",
+    inputs: text,
+  });
+  if (!Array.isArray(res)) throw new Error("Failed to get embedding");
+  return res as number[];
+}
+
+function cosine(a: number[], b: number[]): number {
+  const dot = a.reduce((sum, val, i) => sum + val * b[i], 0);
+  const magA = Math.sqrt(a.reduce((sum, val) => sum + val ** 2, 0));
+  const magB = Math.sqrt(b.reduce((sum, val) => sum + val ** 2, 0));
+  return dot / (magA * magB);
+}
+
+// MCP server 
+const server = new McpServer({ name: "prescription-mcp", version: "1.0.0" });
+
+// 1) List all patients
+server.registerTool(
+  "get_all_patients",
+  {
+    title: "Get All Patients",
+    description: "List every patient in the database",
+    inputSchema: {},
+  },
+  async () => ({
+    content: [
+      {
+        type: "text",
+        text: JSON.stringify(await PatientModel.find().lean(), null, 2),
       },
-    },
-    {
-      name: 'generate_prescription',
-      description: 'Generate prescription from symptoms',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          patient_id: { type: 'string' },
-          symptoms: { type: 'string' },
-          final_prescription: { type: 'string' },
+    ],
+  })
+);
+
+// 2) Fetch one patient by ID
+server.registerTool(
+  "get_patient_by_id",
+  {
+    title: "Get Patient by ID",
+    description: "Fetch a single patient record",
+    inputSchema: { patient_id: z.string() },
+  },
+  async ({ patient_id }: { patient_id: string }) => {
+    const p = await PatientModel.findOne({ id: patient_id }).lean();
+    if (!p) throw new Error("Patient not found");
+    return {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify(p, null, 2),
         },
-        required: ['patient_id', 'symptoms'],
-      },
-    },
-    {
-      name: 'get_prescription_history',
-      description: 'Get prescription log',
-      inputSchema: { type: 'object', properties: {} },
-    },
-  ],
-}));
-
-mcp.setRequestHandler(CallToolRequestSchema, async (request) => {
-  const args = request.params.arguments as Partial<PrescriptionRequest> | undefined;
-  if (!args) return { content: [{ type: 'text', text: 'Missing arguments' }] };
-
-  try {
-    switch (request.params.name) {
-      case 'get_all_patients': {
-        const all = await PatientModel.find();
-        return {
-          content: [{ type: 'text', text: JSON.stringify(all, null, 2) }],
-        };
-      }
-      case 'get_patient_by_id': {
-        if (!args.patient_id) throw new Error('patient_id is required');
-        const patient = await PatientModel.findOne({ id: args.patient_id });
-        if (!patient) throw new Error('Not found');
-        return {
-          content: [{ type: 'text', text: JSON.stringify(patient, null, 2) }],
-        };
-      }
-      case 'generate_prescription': {
-        const result = await generatePrescription(args as PrescriptionRequest);
-        return {
-          content: [{ type: 'text', text: JSON.stringify(result, null, 2) }],
-        };
-      }
-      case 'get_prescription_history': {
-        const history = await fs.readFile('past_prescriptions.txt', 'utf-8').catch(() => '');
-        return {
-          content: [{ type: 'text', text: history || 'No history found.' }],
-        };
-      }
-      default:
-        throw new Error('Unknown tool');
-    }
-  } catch (e: unknown) {
-    const err = e as Error;
-    return { content: [{ type: 'text', text: `Error: ${err.message}` }] };
+      ],
+    };
   }
-});
+);
 
-mcp.onerror = (err) => console.error('[MCP Error]', err);
-mcp.connect(new StdioServerTransport()).then(() => {
-  console.log('[MCP] Running on stdio');
-});
-
-const app = express();
-app.use(cors());
-app.use(express.json());
-app.use('/ui', express.static(path.join(__dirname, '..', 'public'), { index: 'index.html' }));
-
-app.get('/api/patients', async (req, res) => {
-  const patients = await PatientModel.find();
-  res.json(patients);
-});
-
-app.get('/api/patients/:patient_id', async (req, res) => {
-  const patient = await PatientModel.findOne({ id: req.params.patient_id });
-  if (!patient) return res.status(404).json({ detail: 'Patient not found' });
-  res.json(patient);
-});
-
-app.get('/api/history', async (req, res) => {
-  const history = await fs.readFile('past_prescriptions.txt', 'utf-8').catch(() => '');
-  res.send(history || 'No history');
-});
-
-app.post('/api/generate_prescription', async (req, res) => {
-  const { patient_id, symptoms, final_prescription } = req.body as PrescriptionRequest;
-  try {
-    const result = await generatePrescription({ patient_id, symptoms, final_prescription });
-    res.json(result);
-  } catch (e: unknown) {
-    const err = e as Error;
-    res.status(500).json({ detail: err.message });
+// 3) Read prescription history
+server.registerTool(
+  "get_prescription_history",
+  {
+    title: "Get Prescription History",
+    description: "Read the past_prescriptions.txt log",
+    inputSchema: {},
+  },
+  async () => {
+    const hist = await fs.readFile("past_prescriptions.txt", "utf-8").catch(() => "");
+    return {
+      content: [
+        {
+          type: "text",
+          text: hist || "No history available.",
+        },
+      ],
+    };
   }
-});
+);
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`[Express] UI on http://localhost:${PORT}/ui`);
-});
+// 4) Record a new prescription entry with full details
+server.registerTool(
+  "add_prescription",
+  {
+    title: "Add Prescription",
+    description: "Append a new prescription entry to the history log",
+    inputSchema: {
+      patient_id: z.string(),
+      symptoms: z.string(),
+      prescription: z.string(),
+    },
+  },
+  async ({ patient_id, symptoms, prescription }) => {
+    const patient = await PatientModel.findOne({ id: patient_id }).lean();
+    if (!patient) throw new Error("Patient not found");
+
+    const entry = `Patient: ${patient_id} | Age: ${patient.age} | Diagnosis: ${patient.diagnosis} | History: ${patient.history.join(", ")} | Symptoms: ${symptoms} | Prescription: ${prescription}\n`;
+    await fs.appendFile("past_prescriptions.txt", entry, "utf-8");
+    return {
+      content: [
+        {
+          type: "text",
+          text: "Prescription logged.",
+        },
+      ],
+    };
+  }
+);
+
+// 5) RAG Tool: Get Similar Prescriptions
+server.registerTool(
+  "get_similar_prescriptions",
+  {
+    title: "Get Similar Prescriptions",
+    description: "Retrieve top similar past prescriptions using RAG",
+    inputSchema: {
+      patient_id: z.string(),
+      symptoms: z.string(),
+    },
+  },
+  async ({ patient_id, symptoms }) => {
+    const patient = await PatientModel.findOne({ id: patient_id }).lean();
+    if (!patient) throw new Error("Patient not found");
+
+    const histText = await fs.readFile("past_prescriptions.txt", "utf-8").catch(() => "");
+    if (!histText) return { content: [{ type: "text", text: "No history available." }] };
+
+    const records = histText.split("\n").filter(Boolean).map(line => {
+      const parts = line.split("|").map(p => p.trim());
+      const age = parts[1]?.split(":")[1]?.trim() ?? "";
+      const diagnosis = parts[2]?.split(":")[1]?.trim() ?? "";
+      const history = parts[3]?.split(":")[1]?.trim() ?? "";
+      const symptoms = parts[4]?.split(":")[1]?.trim() ?? "";
+      const prescription = parts[5]?.split(":")[1]?.trim() ?? "";
+      return {
+        raw: line,
+        age,
+        diagnosis,
+        history,
+        symptoms,
+        prescription,
+        vector: [] as number[],
+      };
+    });
+
+    await Promise.all(records.map(async r => {
+      r.vector = await embed(`${r.age} ${r.diagnosis} ${r.history} ${r.symptoms} ${r.prescription}`);
+    }));
+
+    const queryVector = await embed(`${patient.age} ${patient.diagnosis} ${patient.history.join(" ")} ${symptoms}`);
+
+    const ranked = records.map(r => ({
+      ...r,
+      score: cosine(r.vector, queryVector),
+    })).sort((a, b) => b.score - a.score);
+
+    const topRecords = ranked.slice(0, 2).map(r => r.raw).join("\n");
+
+    return {
+      content: [
+        {
+          type: "text",
+          text: topRecords || "No similar prescriptions found.",
+        },
+      ],
+    };
+  }
+);
+
+// ——— Start MCP server ———
+await server.connect(new StdioServerTransport());
+console.log("[MCP] prescription-mcp server running on stdio");

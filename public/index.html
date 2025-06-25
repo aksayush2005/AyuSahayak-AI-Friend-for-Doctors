@@ -389,7 +389,7 @@
   doc.setFont("helvetica", "normal");
   doc.text("Dr. A. Nayak, MBBS, MD", 105, 27, { align: "center" });
   doc.text("Reg. No: 12345678 | Contact: +91-9876543210", 105, 32, { align: "center" });
-  doc.line(20, 35, 190, 35); // horizontal line
+  doc.line(20, 35, 190, 35); 
 
   // Patient Info
   doc.setFontSize(12);
@@ -411,7 +411,7 @@
   doc.line(120, 270, 190, 270); // signature line
   doc.text("Doctor's Signature", 140, 275);
 
-  // Save PDF
+
   doc.save(`${patient.replace(/\s+/g, "_")}_prescription.pdf`);
 }
 
@@ -422,4 +422,3 @@
   </script>
 </body>
 </html>
-

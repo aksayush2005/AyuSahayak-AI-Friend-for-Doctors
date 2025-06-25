@@ -125,7 +125,7 @@ Start the prescription directly. Do not include disclaimers or introductions.
   }
 });
 
-const PORT = 3000;
-app.listen(PORT, () => {
-  console.log(`Doctor Dashboard running at http://localhost:${PORT}`);
+const PORT = parseInt(process.env.PORT ?? "3000", 10);
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`🚀 Doctor Dashboard running on port ${PORT}`);
 });

@@ -4,13 +4,14 @@
   "description": "TypeScript Express server with MCP integration for prescription generation",
   "main": "dist/server.js",
   "type": "module",
-  "scripts": {
-    "start": "node dist/server.js",
-    "dev": "tsx watch src/server.ts",
-    "build": "tsc",
-    "mcp": "node dist/mcp-server.js",
-    "mcp:dev": "tsx src/mcp-server.ts"
-  },
+"scripts": {
+  "build": "tsc",
+  "postinstall": "npm run build",
+  "start": "npm run build && node dist/server.js",
+  "dev": "tsx watch src/server.ts",
+  "mcp": "node dist/mcp-server.js",
+  "mcp:dev": "tsx src/mcp-server.ts"
+},
   "dependencies": {
     "@google/genai": "^0.8.0",
     "@huggingface/inference": "^4.0.6",

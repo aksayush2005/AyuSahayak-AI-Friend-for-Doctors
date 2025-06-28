@@ -1,0 +1,70 @@
+@import url('https://fonts.googleapis.com/css2?family=Jost:wght@400;500;700&display=swap');
+
+body, #root, * {
+  font-family: 'Jost', sans-serif !important;
+}
+
+/* Remove max-width and padding from #root for full-bleed homepage */
+#root {
+  text-align: center;
+}
+
+/* Animation for fade-in */
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.animate-fade-in {
+  animation: fade-in 1s cubic-bezier(0.4,0,0.2,1) both;
+}
+
+/* Animated gradient text */
+@keyframes text-gradient {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: 100% 50%;
+  }
+}
+.animate-text-gradient {
+  background-size: 200% 200%;
+  animation: text-gradient 2s ease-in-out both;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+
